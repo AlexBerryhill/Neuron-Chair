@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-BCI Workshop Auxiliary Tools
-
-Created on Fri May 08 15:34:59 2015
-
-@author: Cassani
-"""
-
 import os
 import sys
 from tempfile import gettempdir
@@ -246,6 +238,7 @@ def beep(waveform=(79, 45, 32, 50, 99, 113, 126, 127)):
 
     From https://gist.github.com/juancarlospaco/c295f6965ed056dd08da
     """
+    # sys.stdout.write('\a')    
     beepy.beep(1)
     # wavefile = os.path.join(gettempdir(), "beep.wav")
     # if not os.path.isfile(wavefile) or not os.access(wavefile, os.R_OK):
