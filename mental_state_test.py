@@ -167,7 +167,7 @@ if __name__ == "__main__":
         try:
                 previous_timestamp = 0 # The starting timestamp
                 position = [0,0,0]
-                roll, pitch, yaw = 0, 0, 0
+                starting_roll = [135, -45, -45]
                 while True:
 
                         """ 3.1 ACQUIRE DATA """
@@ -211,11 +211,11 @@ if __name__ == "__main__":
 
                         # Process gyro_data using complementary filter or other methods
                         roll, pitch, yaw = BCIw.complementary_filter(gyro_data, accel_data, dt)
-
+                        roll = roll.round(1)-starting_roll
                         # Print or use the angles as needed
-                        print("Roll Angle:", roll.round(1))
-                        print("Pitch Angle:", pitch.round(1))
-                        print("Yaw Angle:", yaw.round(1))
+                        print("Roll Angle:", roll.round(1)-starting_roll)
+                        # print("Pitch Angle:", pitch.round(1))
+                        # print("Yaw Angle:", yaw.round(1))
                         position += gyro_data.mean(axis=0)
                         if(y_hat == 0):
                                 # arduino.write(str.encode('0'))
@@ -223,19 +223,15 @@ if __name__ == "__main__":
                         else:
                                 # arduino.write(str.encode('1'))
                                 # print(gyro_data.mean(axis=0))
-                                axis = 2
-                                if (position[axis] > 30 or position[axis] < -30):
-                                        position = [0, 0, 0]
-                                elif (position[axis] > 10): #left
+                                if (roll[1]>100):
                                         # arduino.write(str.encode('l')) #letter L
                                         print('l')
-                                elif (position[axis] < -10): # right
+                                elif (position[0] < -100): #left
                                         # arduino.write(str.encode('r'))
                                         print('r')
                                 else: #center
                                         # arduino.write(str.encode('c'))
                                         print('c')
-                                # print(y_hat)
 
                         decision_buffer, _ = BCIw.update_buffer(decision_buffer,
                                                                 np.reshape(y_hat, (-1, 1)))
