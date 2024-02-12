@@ -23,7 +23,7 @@ import math
 if __name__ == "__main__":
 
         # """ Open Serial port to Arduino """
-        arduino = serial.Serial(port = 'COM3', timeout=0)
+        # arduino = serial.Serial(port = 'COM7', timeout=0)
         time.sleep(2)  
 
         """ 0. PARSE ARGUMENTS """
@@ -40,6 +40,7 @@ if __name__ == "__main__":
         print('Looking for an EEG stream...')
         streams = resolve_byprop('type', 'EEG', timeout=2)
         gyro = resolve_byprop('type', 'GYRO', timeout=2)
+        accel = resolve_byprop('type', 'Accelerometer', timeout=2)
 
         if len(streams) == 0:
                 raise RuntimeError('Can\'t find EEG stream.')
@@ -49,10 +50,16 @@ if __name__ == "__main__":
                 if len(gyro) == 0:
                         raise RuntimeError('Can\'t find Gyro stream.')
 
+        if len(accel) == 0:
+                gyro = resolve_byprop('type', 'Accelerometer', timeout=2)
+                if len(accel) == 0:
+                        raise RuntimeError('Can\'t find Accel stream.')
+
         # Set active EEG stream to inlet and apply time correction
         print("Start acquiring data")
         inlet = StreamInlet(streams[0], max_chunklen=12)
         inlet_gyro = StreamInlet(gyro[0], max_chunklen=12)
+        inlet_accel = StreamInlet(accel[0], max_chunklen=12)
         eeg_time_correction = inlet.time_correction()
         gyro_time_correction = inlet_gyro.time_correction()
         
@@ -68,6 +75,12 @@ if __name__ == "__main__":
         gyro_description = gyro_info.desc()
         gyro_fs = int(gyro_info.nominal_srate())
         n_gyro_channels = gyro_info.channel_count()
+
+        # Get the stream info, description, sampling frequency, number of channels
+        accel_info = inlet_accel.info()
+        accel_description = accel_info.desc()
+        accel_fs = int(accel_info.nominal_srate())
+        n_accel_channels = accel_info.channel_count()
 
         # Get names of all channels
         ch = description.child('channels').first_child()
@@ -151,9 +164,10 @@ if __name__ == "__main__":
         # The try/except structure allows to quit the while loop by aborting the
         # script with <Ctrl-C>
         print('Press Ctrl-C in the console to break the while loop.')
-
         try:
+                previous_timestamp = 0 # The starting timestamp
                 position = [0,0,0]
+                roll, pitch, yaw = 0, 0, 0
                 while True:
 
                         """ 3.1 ACQUIRE DATA """
@@ -179,32 +193,49 @@ if __name__ == "__main__":
                         y_hat = BCIw.test_classifier(classifier,
                                                         feat_vector.reshape(1, -1), mu_ft,
                                                         std_ft)
-                        
+                        """ 3.3 Calculate Angle """
+                        # Obtain gyroscope data
                         gyro_data, gyro_timestamp = inlet_gyro.pull_chunk(
                                 timeout=1, max_samples=int(shift_length * gyro_fs))
                         gyro_data = np.array(gyro_data)
-
-                        dead_zone = lambda x: 0.0 if math.fabs(x) < 4 else float(x)
-                        vec_dead_zone = np.vectorize(dead_zone)
-                        gyro_data = vec_dead_zone(gyro_data)
+                        gyro_timestamp = np.array(gyro_timestamp)
                         
+                        # Calculate current dt
+                        dt = BCIw.calculate_dt(previous_timestamp, gyro_timestamp[0]) if previous_timestamp != 0 else 0
+                        previous_timestamp = gyro_timestamp[-1]
+
+                        # Obtain accelerometer data
+                        accel_data, accel_timestamp = inlet_accel.pull_chunk(
+                                timeout=1, max_samples=int(shift_length * accel_fs))
+                        accel_data = np.array(accel_data)
+
+                        # Process gyro_data using complementary filter or other methods
+                        roll, pitch, yaw = BCIw.complementary_filter(gyro_data, accel_data, dt)
+
+                        # Print or use the angles as needed
+                        print("Roll Angle:", roll.round(1))
+                        print("Pitch Angle:", pitch.round(1))
+                        print("Yaw Angle:", yaw.round(1))
                         position += gyro_data.mean(axis=0)
-                        print(position.round(0))
-                        # print(gyro_data.mean(axis=0))
-                        axis = 2
-                        if (position[axis] > 30 or position[axis] < -30):
-                                position = [0, 0, 0]
-                        elif (position[axis] > 10):
-                                print('left')
-                        elif (position[axis] < -10):
-                                print('right')
-                        else:
-                                print('center')
-                        print(y_hat)
                         if(y_hat == 0):
-                                arduino.write(str.encode('0'))
+                                # arduino.write(str.encode('0'))
+                                print('0')
                         else:
-                                arduino.write(str.encode('1'))
+                                # arduino.write(str.encode('1'))
+                                # print(gyro_data.mean(axis=0))
+                                axis = 2
+                                if (position[axis] > 30 or position[axis] < -30):
+                                        position = [0, 0, 0]
+                                elif (position[axis] > 10): #left
+                                        # arduino.write(str.encode('l')) #letter L
+                                        print('l')
+                                elif (position[axis] < -10): # right
+                                        # arduino.write(str.encode('r'))
+                                        print('r')
+                                else: #center
+                                        # arduino.write(str.encode('c'))
+                                        print('c')
+                                # print(y_hat)
 
                         decision_buffer, _ = BCIw.update_buffer(decision_buffer,
                                                                 np.reshape(y_hat, (-1, 1)))

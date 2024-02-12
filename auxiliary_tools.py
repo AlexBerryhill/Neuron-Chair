@@ -417,3 +417,25 @@ def plot_classifier_training(clf, X, y, features_to_plot=[0, 1]):
         ax.scatter(X[idx, 0], X[idx, 1], c=color, cmap=plt.cm.Paired)
 
     plt.axis('tight')
+
+def complementary_filter(gyro_data, accel_data, dt):
+    alpha = 0.98  # Weight for gyroscope data
+    beta = 0.02   # Weight for accelerometer data
+
+    gyro_data = np.radians(gyro_data)  # Convert gyro data to radians
+
+    # Compute pitch and roll angles from accelerometer data
+    accel_pitch = np.arctan2(accel_data[1], np.sqrt(accel_data[0]**2 + accel_data[2]**2))
+    accel_roll = np.arctan2(-accel_data[0], accel_data[2])
+
+    # Integrate gyroscope data to get pitch and roll angles
+    gyro_pitch = alpha * (gyro_data[1] * dt + accel_pitch) + (1 - alpha) * accel_pitch
+    gyro_roll = alpha * (gyro_data[0] * dt + accel_roll) + (1 - alpha) * accel_roll
+
+    # Integrate gyroscope data for yaw estimation
+    yaw = alpha * gyro_data[2] * dt
+
+    return np.degrees(gyro_roll), np.degrees(gyro_pitch), np.degrees(yaw)
+
+def calculate_dt(prev_timestamp, current_timestamp):
+    return (current_timestamp - prev_timestamp)
