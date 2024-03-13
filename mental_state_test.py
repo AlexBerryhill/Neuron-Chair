@@ -122,11 +122,13 @@ if __name__ == "__main__":
 
         # Record data for mental activity 0
         BCIw.beep()
+        print('\nRelax\n')
+
         eeg_data0, timestamps0 = inlet.pull_chunk(
                 timeout=training_length+1, max_samples=fs * training_length)
         eeg_data0 = np.array(eeg_data0)[:, index_channel]
 
-        print('\nClose your eyes!\n')
+        print('\nFocus!\n')
 
         # Record data for mental activity 1
         BCIw.beep()  # Beep sound
@@ -221,12 +223,10 @@ if __name__ == "__main__":
                                 # arduino.write(str.encode('0'))
                                 print('0')
                         else:
-                                # arduino.write(str.encode('1'))
-                                # print(gyro_data.mean(axis=0))
                                 if (roll[1]>100):
                                         # arduino.write(str.encode('l')) #letter L
                                         print('l')
-                                elif (position[0] < -100): #left
+                                elif (position[0] < -100):
                                         # arduino.write(str.encode('r'))
                                         print('r')
                                 else: #center
