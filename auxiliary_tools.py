@@ -9,10 +9,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn import svm
 from scipy.signal import butter, lfilter, lfilter_zi
+from pylsl import StreamInlet, resolve_byprop
 
 
 NOTCH_B, NOTCH_A = butter(4, np.array([55, 65])/(256/2), btype='bandstop')
 
+def connect_to_streams():
+    print('Looking for EEG, Gyro, and Accelerometer streams...')
+    eeg_streams = resolve_byprop('type', 'EEG', timeout=2)
+    gyro_streams = resolve_byprop('type', 'GYRO', timeout=2)
+    accel_streams = resolve_byprop('type', 'Accelerometer', timeout=2)
+
+    if not eeg_streams or not gyro_streams or not accel_streams:
+        raise RuntimeError('Cannot find necessary streams.')
+
+    inlet_eeg = StreamInlet(eeg_streams[0], max_chunklen=12)
+    inlet_gyro = StreamInlet(gyro_streams[0], max_chunklen=12)
+    inlet_accel = StreamInlet(accel_streams[0], max_chunklen=12)
+
+    return inlet_eeg, inlet_gyro, inlet_accel
 
 def plot_multichannel(data, params=None):
     """Create a plot to present multichannel data.
