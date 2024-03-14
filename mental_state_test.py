@@ -163,8 +163,8 @@ if __name__ == "__main__":
 
         plotter_decision = BCIw.DataPlotter(30, ['Decision'])
 
-        # The try/except structure allows to quit the while loop by aborting the
-        # script with <Ctrl-C>
+        # The try/except structure allows to quit the 
+        # while loop by aborting the script with <Ctrl-C>
         print('Press Ctrl-C in the console to break the while loop.')
         try:
                 previous_timestamp = 0 # The starting timestamp
