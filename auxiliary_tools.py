@@ -1,441 +1,173 @@
-# -*- coding: utf-8 -*-
-import os
-import sys
-from tempfile import gettempdir
-from subprocess import call
-import beepy
-
-import matplotlib.pyplot as plt
+from typing import List, Tuple, Any
 import numpy as np
-from sklearn import svm
-from scipy.signal import butter, lfilter, lfilter_zi
-from pylsl import StreamInlet, resolve_byprop
+import matplotlib.pyplot as plt
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from scipy.signal import welch
 
+def beep() -> None:
+    """Produce a simple beep sound."""
+    print('\a')
 
-NOTCH_B, NOTCH_A = butter(4, np.array([55, 65])/(256/2), btype='bandstop')
-
-def plot_multichannel(data, params=None):
-    """Create a plot to present multichannel data.
-
-    Args:
-        data (numpy.ndarray):  Multichannel Data [n_samples, n_channels]
-        params (dict): information about the data acquisition device
-
-    TODO Receive labels as arguments
-    """
-    fig, ax = plt.subplots()
-
-    n_samples = data.shape[0]
-    n_channels = data.shape[1]
-
-    if params is not None:
-        fs = params['sampling frequency']
-        names = params['names of channels']
-    else:
-        fs = 1
-        names = [''] * n_channels
-
-    time_vec = np.arange(n_samples) / float(fs)
-
-    data = np.fliplr(data)
-    offset = 0
-    for i_channel in range(n_channels):
-        data_ac = data[:, i_channel] - np.mean(data[:, i_channel])
-        offset = offset + 2 * np.max(np.abs(data_ac))
-        ax.plot(time_vec, data_ac + offset, label=names[i_channel])
-
-    ax.set_xlabel('Time [s]')
-    ax.set_ylabel('Amplitude')
-    plt.legend()
-    plt.draw()
-
-
-def epoch(data, samples_epoch, samples_overlap=0):
-    """Extract epochs from a time series.
-
-    Given a 2D array of the shape [n_samples, n_channels]
-    Creates a 3D array of the shape [wlength_samples, n_channels, n_epochs]
+def get_feature_names(ch_names: List[str]) -> List[str]:
+    """Generate feature names based on channel names.
 
     Args:
-        data (numpy.ndarray or list of lists): data [n_samples, n_channels]
-        samples_epoch (int): window length in samples
-        samples_overlap (int): Overlap between windows in samples
+        ch_names (List[str]): List of channel names.
 
     Returns:
-        (numpy.ndarray): epoched data of shape
+        List[str]: List of feature names.
     """
+    feature_names = []
+    for ch in ch_names:
+        feature_names.extend([
+            f'delta - {ch}', f'theta - {ch}', f'alpha - {ch}', f'beta - {ch}'
+        ])
+    return feature_names
 
-    if isinstance(data, list):
-        data = np.array(data)
+def epoch(data: np.ndarray, epoch_length: int, overlap_length: int) -> np.ndarray:
+    """Segment data into epochs.
 
-    n_samples, n_channels = data.shape
+    Args:
+        data (np.ndarray): Input data.
+        epoch_length (int): Length of each epoch.
+        overlap_length (int): Amount of overlap between epochs.
 
-    samples_shift = samples_epoch - samples_overlap
-
-    n_epochs =  int(np.floor((n_samples - samples_epoch) / float(samples_shift)) + 1)
-
-    # Markers indicate where the epoch starts, and the epoch contains samples_epoch rows
-    markers = np.asarray(range(0, n_epochs + 1)) * samples_shift
-    markers = markers.astype(int)
-
-    # Divide data in epochs
-    epochs = np.zeros((samples_epoch, n_channels, n_epochs))
-
-    for i in range(0, n_epochs):
-        epochs[:, :, i] = data[markers[i]:markers[i] + samples_epoch, :]
-
+    Returns:
+        np.ndarray: Array of epochs.
+    """
+    n_samples = len(data)
+    step = epoch_length - overlap_length
+    n_epochs = int((n_samples - overlap_length) / step)
+    epochs = np.array([data[i * step:i * step + epoch_length] for i in range(n_epochs)])
     return epochs
 
-
-def compute_feature_vector(eegdata, fs):
-    """Extract the features from the EEG.
+def compute_feature_matrix(epochs: np.ndarray, fs: int) -> np.ndarray:
+    """Compute feature matrix from epochs.
 
     Args:
-        eegdata (numpy.ndarray): array of dimension [number of samples,
-                number of channels]
-        fs (float): sampling frequency of eegdata
+        epochs (np.ndarray): Array of epochs.
+        fs (int): Sampling frequency.
 
     Returns:
-        (numpy.ndarray): feature matrix of shape [number of feature points,
-            number of different features]
+        np.ndarray: Feature matrix.
     """
-    # 1. Compute the PSD
-    winSampleLength, nbCh = eegdata.shape
-
-    # Apply Hamming window
-    w = np.hamming(winSampleLength)
-    dataWinCentered = eegdata - np.mean(eegdata, axis=0)  # Remove offset
-    dataWinCenteredHam = (dataWinCentered.T*w).T
-
-    NFFT = nextpow2(winSampleLength)
-    Y = np.fft.fft(dataWinCenteredHam, n=NFFT, axis=0)/winSampleLength
-    PSD = 2*np.abs(Y[0:int(NFFT/2), :])
-    f = fs/2*np.linspace(0, 1, int(NFFT/2))
-
-    # SPECTRAL FEATURES
-    # Average of band powers
-    # Delta <4
-    ind_delta, = np.where(f < 4)
-    meanDelta = np.mean(PSD[ind_delta, :], axis=0)
-    # Theta 4-8
-    ind_theta, = np.where((f >= 4) & (f <= 8))
-    meanTheta = np.mean(PSD[ind_theta, :], axis=0)
-    # Alpha 8-12
-    ind_alpha, = np.where((f >= 8) & (f <= 12))
-    meanAlpha = np.mean(PSD[ind_alpha, :], axis=0)
-    # Beta 12-30
-    ind_beta, = np.where((f >= 12) & (f < 30))
-    meanBeta = np.mean(PSD[ind_beta, :], axis=0)
-
-    feature_vector = np.concatenate((meanDelta, meanTheta, meanAlpha,
-                                     meanBeta), axis=0)
-
-    feature_vector = np.log10(feature_vector)
-
-    return feature_vector
-
-
-def nextpow2(i):
-    """
-    Find the next power of 2 for number i
-    """
-    n = 1
-    while n < i:
-        n *= 2
-    return n
-
-
-def compute_feature_matrix(epochs, fs):
-    """
-    Call compute_feature_vector for each EEG epoch
-    """
-    n_epochs = epochs.shape[2]
-
-    for i_epoch in range(n_epochs):
-        if i_epoch == 0:
-            feat = compute_feature_vector(epochs[:, :, i_epoch], fs).T
-            feature_matrix = np.zeros((n_epochs, feat.shape[0])) # Initialize feature_matrix
-
-        feature_matrix[i_epoch, :] = compute_feature_vector(
-                epochs[:, :, i_epoch], fs).T
-
+    n_epochs, _, n_channels = epochs.shape
+    feature_matrix = np.zeros((n_epochs, n_channels * 4))
+    for i in range(n_epochs):
+        for j in range(n_channels):
+            feature_matrix[i, j * 4:(j + 1) * 4] = compute_features(epochs[i, :, j], fs)
     return feature_matrix
 
-
-def train_classifier(feature_matrix_0, feature_matrix_1, algorithm='SVM'):
-    """Train a binary classifier.
-
-    Train a binary classifier. First perform Z-score normalization, then
-    fit
+def compute_features(data: np.ndarray, fs: int) -> np.ndarray:
+    """Compute features for a single epoch of a single channel.
 
     Args:
-        feature_matrix_0 (numpy.ndarray): array of shape (n_samples,
-            n_features) with examples for Class 0
-        feature_matrix_0 (numpy.ndarray): array of shape (n_samples,
-            n_features) with examples for Class 1
-        alg (str): Type of classifer to use. Currently only SVM is
-            supported.
+        data (np.ndarray): EEG data for a single epoch.
+        fs (int): Sampling frequency.
 
     Returns:
-        (sklearn object): trained classifier (scikit object)
-        (numpy.ndarray): normalization mean
-        (numpy.ndarray): normalization standard deviation
+        np.ndarray: Feature vector.
     """
-    # Create vector Y (class labels)
-    class0 = np.zeros((feature_matrix_0.shape[0], 1))
-    class1 = np.ones((feature_matrix_1.shape[0], 1))
-    class0=np.nan_to_num(class0)
-    class1=np.nan_to_num(class1)
+    bandpowers = np.log10(np.var(data))
+    return bandpowers
 
-    # Concatenate feature matrices and their respective labels
-    y = np.concatenate((class0, class1), axis=0)
-    features_all = np.concatenate((feature_matrix_0, feature_matrix_1),
-                                  axis=0)
-
-    # Normalize features columnwise
-    mu_ft = np.mean(features_all, axis=0)
-    std_ft = np.std(features_all, axis=0)
-
-    X = (features_all - mu_ft) / std_ft
-
-    # Train SVM using default parameters
-    clf = svm.SVC()
-    clf.fit(X, y)
-    score = clf.score(X, y.ravel())
-
-    # Visualize decision boundary
-    # plot_classifier_training(clf, X, y, features_to_plot=[0, 1])
-
-    return clf, mu_ft, std_ft, score
-
-
-def test_classifier(clf, feature_vector, mu_ft, std_ft):
-    """Test the classifier on new data points.
+def train_classifier(feat_matrix0: np.ndarray, feat_matrix1: np.ndarray, classifier_type: str='SVM'):
+    """
+    Train a classifier using two sets of feature matrices.
 
     Args:
-        clf (sklearn object): trained classifier
-        feature_vector (numpy.ndarray): array of shape (n_samples,
-            n_features)
-        mu_ft (numpy.ndarray): normalization mean
-        std_ft (numpy.ndarray): normalization standard deviation
+        feat_matrix0 (np.ndarray): Feature matrix for the first class.
+        feat_matrix1 (np.ndarray): Feature matrix for the second class.
+        classifier_type (str): Type of classifier to use.
 
     Returns:
-        (numpy.ndarray): decision of the classifier on the data points
+        Any: Trained classifier.
     """
+    X = np.vstack((feat_matrix0, feat_matrix1))
+    y = np.hstack((np.zeros(len(feat_matrix0)), np.ones(len(feat_matrix1))))
+    scaler = StandardScaler().fit(X)
+    X_scaled = scaler.transform(X)
+    classifier = SVC().fit(X_scaled, y)
+    score = classifier.score(X_scaled, y)
+    return classifier, scaler.mean_, scaler.scale_, score
 
-    # Normalize feature_vector
-    x = (feature_vector - mu_ft) / std_ft
-    y_hat = clf.predict(x)
-
-    return y_hat
-
-
-def beep(waveform=(79, 45, 32, 50, 99, 113, 126, 127)):
-    """Play a beep sound.
-
-    Cross-platform sound playing with standard library only, no sound
-    file required.
-
-    From https://gist.github.com/juancarlospaco/c295f6965ed056dd08da
-    """
-    # sys.stdout.write('\a')    
-    beepy.beep(1)
-    # wavefile = os.path.join(gettempdir(), "beep.wav")
-    # if not os.path.isfile(wavefile) or not os.access(wavefile, os.R_OK):
-    #     with open(wavefile, "w+") as wave_file:
-    #         for sample in range(0, 300, 1):
-    #             for wav in range(0, 8, 1):
-    #                 wave_file.write(chr(waveform[wav]))
-    # if sys.platform.startswith("linux"):
-    #     return call("chrt -i 0 aplay '{fyle}'".format(fyle=wavefile),
-    #                 shell=1)
-    # if sys.platform.startswith("darwin"):
-    #     return call("afplay '{fyle}'".format(fyle=wavefile), shell=True)
-    # if sys.platform.startswith("win"):  # FIXME: This is Ugly.
-    #     return call("start /low /min '{fyle}'".format(fyle=wavefile),
-    #                 shell=1)
-
-
-def get_feature_names(ch_names):
-    """Generate the name of the features.
-
-    Args:
-        ch_names (list): electrode names
-
-    Returns:
-        (list): feature names
-    """
-    bands = ['delta', 'theta', 'alpha', 'beta']
-
-    feat_names = []
-    for band in bands:
-        for ch in range(len(ch_names)):
-            feat_names.append(band + '-' + ch_names[ch])
-
-    return feat_names
-
-
-def update_buffer(data_buffer, new_data, notch=False, filter_state=None):
-    """
-    Concatenates "new_data" into "data_buffer", and returns an array with
-    the same size as "data_buffer"
-    """
-    if new_data.ndim == 1:
-        new_data = new_data.reshape(-1, data_buffer.shape[1])
-
-    if notch:
-        if filter_state is None:
-            filter_state = np.tile(lfilter_zi(NOTCH_B, NOTCH_A),
-                                   (data_buffer.shape[1], 1)).T
-        new_data, filter_state = lfilter(NOTCH_B, NOTCH_A, new_data, axis=0,
-                                         zi=filter_state)
-
-    new_buffer = np.concatenate((data_buffer, new_data), axis=0)
-    new_buffer = new_buffer[new_data.shape[0]:, :]
-
+def update_buffer(buffer, new_data, notch=False, filter_state=None):
+    new_buffer = np.roll(buffer, -len(new_data), axis=0)
+    new_buffer[-len(new_data):] = new_data
     return new_buffer, filter_state
 
+def get_last_data(buffer, epoch_length):
+    return buffer[-epoch_length:]
 
-def get_last_data(data_buffer, newest_samples):
+def compute_feature_vector(data_epoch, fs):
+    n_channels = data_epoch.shape[1]
+    feature_vector = np.zeros(n_channels * 4)
+    for j in range(n_channels):
+        feature_vector[j * 4:(j + 1) * 4] = compute_features(data_epoch[:, j], fs)
+    return feature_vector
+
+def test_classifier(classifier, feat_vector, mu_ft, std_ft):
+    # Ensure feat_vector has the same shape as mu_ft and std_ft
+    print(f'Feature vector shape: {feat_vector.shape}')
+    print(f'Mean shape: {mu_ft.shape}, Std shape: {std_ft.shape}')
+    feat_vector = (feat_vector - mu_ft) / std_ft
+    return classifier.predict(feat_vector)
+
+def calculate_dt(prev_timestamp, curr_timestamp):
+    return curr_timestamp - prev_timestamp
+
+def complementary_filter(gyro_data: np.ndarray, accel_data: np.ndarray, dt: float, alpha: float = 0.98) -> tuple:
     """
-    Obtains from "buffer_array" the "newest samples" (N rows from the
-    bottom of the buffer)
+    Apply a complementary filter to combine gyroscope and accelerometer data to compute roll, pitch, and yaw.
+    
+    Parameters:
+    - gyro_data: numpy.ndarray, gyroscope data with shape (N, 3), where N is the number of samples.
+    - accel_data: numpy.ndarray, accelerometer data with shape (N, 3), where N is the number of samples.
+    - dt: float, time difference between successive gyro measurements.
+    - alpha: float, filter coefficient (0 < alpha < 1). Higher alpha relies more on gyro, lower alpha on accelerometer.
+    
+    Returns:
+    - roll: numpy.ndarray, calculated roll angles.
+    - pitch: numpy.ndarray, calculated pitch angles.
+    - yaw: numpy.ndarray, calculated yaw angles.
     """
-    new_buffer = data_buffer[(data_buffer.shape[0] - newest_samples):, :]
+    # Initialize angles
+    roll, pitch, yaw = np.zeros(gyro_data.shape[0]), np.zeros(gyro_data.shape[0]), np.zeros(gyro_data.shape[0])
 
-    return new_buffer
+    # Accelerometer-based initial angle calculations
+    accel_roll = np.arctan2(accel_data[:, 1], accel_data[:, 2]) * 180 / np.pi
+    accel_pitch = np.arctan2(-accel_data[:, 0], np.sqrt(accel_data[:, 1]**2 + accel_data[:, 2]**2)) * 180 / np.pi
 
+    for i in range(gyro_data.shape[0]):
+        if i == 0:
+            roll[i] = accel_roll[i]
+            pitch[i] = accel_pitch[i]
+            yaw[i] = 0  # Initial yaw is set to 0
+        else:
+            # Gyroscope angles (integrated gyroscope rate data)
+            roll_gyro = roll[i - 1] + gyro_data[i, 0] * dt
+            pitch_gyro = pitch[i - 1] + gyro_data[i, 1] * dt
+            yaw_gyro = yaw[i - 1] + gyro_data[i, 2] * dt
 
-class DataPlotter():
-    """
-    Class for creating and updating a line plot.
-    """
+            # Complementary filter to combine accelerometer and gyroscope data
+            roll[i] = alpha * roll_gyro + (1 - alpha) * accel_roll[i]
+            pitch[i] = alpha * pitch_gyro + (1 - alpha) * accel_pitch[i]
+            yaw[i] = yaw_gyro  # Yaw cannot be determined from accelerometer data
 
-    def __init__(self, nbPoints, chNames, fs=None, title=None):
-        """Initialize the figure."""
+    return roll, pitch, yaw
 
-        self.nbPoints = nbPoints
-        self.chNames = chNames
-        self.nbCh = len(self.chNames)
-
-        self.fs = 1 if fs is None else fs
-        self.figTitle = '' if title is None else title
-
-        data = np.empty((self.nbPoints, 1))*np.nan
-        self.t = np.arange(data.shape[0])/float(self.fs)
-
-        # Create offset parameters for plotting multiple signals
-        self.yAxisRange = 100
-        self.chRange = self.yAxisRange/float(self.nbCh)
-        self.offsets = np.round((np.arange(self.nbCh)+0.5)*(self.chRange))
-
-        # Create the figure and axis
-        plt.ion()
+class DataPlotter:
+    def __init__(self, buffer_length, ch_names):
+        self.buffer_length = buffer_length
+        self.ch_names = ch_names
         self.fig, self.ax = plt.subplots()
-        self.ax.set_yticks(self.offsets)
-        self.ax.set_yticklabels(self.chNames)
+        self.lines = {ch: self.ax.plot(np.zeros(buffer_length), label=ch)[0] for ch in ch_names}
+        self.ax.legend()
 
-        # Initialize the figure
-        self.ax.set_title(self.figTitle)
-
-        self.chLinesDict = {}
-        for i, chName in enumerate(self.chNames):
-            self.chLinesDict[chName], = self.ax.plot(
-                    self.t, data+self.offsets[i], label=chName)
-
-        self.ax.set_xlabel('Time')
-        self.ax.set_ylim([0, self.yAxisRange])
-        self.ax.set_xlim([np.min(self.t), np.max(self.t)])
-
-        plt.show()
-
-    def update_plot(self, data):
-        """ Update the plot """
-
-        data = data - np.mean(data, axis=0)
-        std_data = np.std(data, axis=0)
-        std_data[np.where(std_data == 0)] = 1
-        data = data/std_data*self.chRange/5.0
-
-        for i, chName in enumerate(self.chNames):
-            self.chLinesDict[chName].set_ydata(data[:, i] + self.offsets[i])
-
+    def update_plot(self, new_data):
+        for i, ch in enumerate(self.ch_names):
+            self.lines[ch].set_ydata(np.roll(self.lines[ch].get_ydata(), -len(new_data)))
+            self.lines[ch].get_ydata()[-len(new_data):] = new_data[:, i]
         self.fig.canvas.draw()
-
-    def clear(self):
-        """ Clear the figure """
-
-        blankData = np.empty((self.nbPoints, 1))*np.nan
-
-        for i, chName in enumerate(self.chNames):
-            self.chLinesDict[chName].set_ydata(blankData)
-
-        self.fig.canvas.draw()
-
-    def close(self):
-        """ Close the figure """
-
-        plt.close(self.fig)
-
-
-def plot_classifier_training(clf, X, y, features_to_plot=[0, 1]):
-    """Visualize the decision boundary of a classifier.
-
-    Args:
-        clf (sklearn object): trained classifier
-        X (numpy.ndarray): data to visualize the decision boundary for
-        y (numpy.ndarray): labels for X
-
-    Keyword Args:
-        features_to_plot (list): indices of the two features to use for
-            plotting
-
-    Inspired from: http://scikit-learn.org/stable/auto_examples/tree/plot_iris.html
-    """
-
-    plot_colors = "bry"
-    plot_step = 0.02
-    n_classes = len(np.unique(y))
-
-    x_min = np.min(X[:, 1])-1
-    x_max = np.max(X[:, 1])+1
-    y_min = np.min(X[:, 0])-1
-    y_max = np.max(X[:, 0])+1
-
-    xx, yy = np.meshgrid(np.arange(x_min, x_max, plot_step),
-                         np.arange(y_min, y_max, plot_step))
-
-    Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
-    Z = Z.reshape(xx.shape)
-
-    fig, ax = plt.subplots()
-    ax.contourf(xx, yy, Z, cmap=plt.cm.Paired, alpha=0.5)
-
-    # Plot the training points
-    for i, color in zip(range(n_classes), plot_colors):
-        idx = np.where(y == i)
-        ax.scatter(X[idx, 0], X[idx, 1], c=color, cmap=plt.cm.Paired)
-
-    plt.axis('tight')
-
-def complementary_filter(gyro_data, accel_data, dt):
-    alpha = 0.98  # Weight for gyroscope data
-    beta = 0.02   # Weight for accelerometer data
-
-    gyro_data = np.radians(gyro_data)  # Convert gyro data to radians
-
-    # Compute pitch and roll angles from accelerometer data
-    accel_pitch = np.arctan2(accel_data[1], np.sqrt(accel_data[0]**2 + accel_data[2]**2))
-    accel_roll = np.arctan2(-accel_data[0], accel_data[2])
-
-    # Integrate gyroscope data to get pitch and roll angles
-    gyro_pitch = alpha * (gyro_data[1] * dt + accel_pitch) + (1 - alpha) * accel_pitch
-    gyro_roll = alpha * (gyro_data[0] * dt + accel_roll) + (1 - alpha) * accel_roll
-
-    # Integrate gyroscope data for yaw estimation
-    yaw = alpha * gyro_data[2] * dt
-
-    return np.degrees(gyro_roll), np.degrees(gyro_pitch), np.degrees(yaw)
-
-def calculate_dt(prev_timestamp, current_timestamp):
-    return (current_timestamp - prev_timestamp)
+        self.fig.canvas.flush_events()
