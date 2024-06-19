@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
-from scipy.signal import welch
+from scipy.signal import welch, butter, lfilter
 
 def beep() -> None:
     """Produce a simple beep sound."""
@@ -69,7 +69,11 @@ def compute_features(data: np.ndarray, fs: int) -> np.ndarray:
     Returns:
         np.ndarray: Feature vector.
     """
-    bandpowers = np.log10(np.var(data))
+    try:
+        bandpowers = np.log10(np.var(data))
+    except:
+        print('Error computing bandpowers')
+        bandpowers = np.zeros(4)
     return bandpowers
 
 def train_classifier(feat_matrix0: np.ndarray, feat_matrix1: np.ndarray, classifier_type: str='SVM'):
@@ -112,12 +116,62 @@ def test_classifier(classifier, feat_vector, mu_ft, std_ft):
     print(f'Feature vector shape: {feat_vector.shape}')
     print(f'Mean shape: {mu_ft.shape}, Std shape: {std_ft.shape}')
     feat_vector = (feat_vector - mu_ft) / std_ft
-    return classifier.predict(feat_vector)
+    try:
+        return classifier.predict(feat_vector)
+    except:
+        print('Error predicting')
+        return 0
 
 def calculate_dt(prev_timestamp, curr_timestamp):
-    return curr_timestamp - prev_timestamp
+    """
+    Calculate time difference between two timestamps.
 
-def complementary_filter(gyro_data: np.ndarray, accel_data: np.ndarray, dt: float, alpha: float = 0.98) -> tuple:
+    Args:
+        prev_timestamp (float): Previous timestamp.
+        curr_timestamp (float): Current timestamp.
+    
+    Returns:
+        float: Time difference in seconds.
+    """
+    return (curr_timestamp - prev_timestamp).total_seconds()
+
+# def butter_lowpass(cutoff, fs, order=5):
+#     """
+#     Create a Butterworth low-pass filter.
+
+#     Args:
+#         cutoff (float): Cutoff frequency.
+#         fs (int): Sampling frequency.
+#         order (int): Order of the filter.
+    
+#     Returns:
+#         tuple: Numerator (b) and denominator (a) polynomials of the filter.
+#     """
+
+#     nyq = 0.5 * fs  # Nyquist frequency
+#     normal_cutoff = cutoff / nyq
+#     b, a = butter(order, normal_cutoff, btype='low', analog=False)
+#     return b, a
+
+# def lowpass_filter(data, cutoff, fs, order=5):
+#     """
+#     Apply a low-pass filter to the input data.
+
+#     Args:
+#         data (np.ndarray): Input data.
+#         cutoff (float): Cutoff frequency.
+#         fs (int): Sampling frequency.
+#         order (int): Order of the filter.
+
+#     Returns:
+#         np.ndarray: Filtered data.
+#     """
+
+#     b, a = butter_lowpass(cutoff, fs, order=order)
+#     y = lfilter(b, a, data)
+#     return y
+
+def complementary_filter(gyro_data: np.ndarray, accel_data: np.ndarray, dt: float, alpha: float = 0.5) -> tuple:
     """
     Apply a complementary filter to combine gyroscope and accelerometer data to compute roll, pitch, and yaw.
     

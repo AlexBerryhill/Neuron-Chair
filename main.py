@@ -18,6 +18,7 @@ import serial
 import time
 import auxiliary_tools as BCIw
 from typing import List, Tuple, Any
+from datetime import datetime
 
 def parse_arguments():
     """Parse command-line arguments.
@@ -51,6 +52,14 @@ def connect_to_streams():
     return streams[0], gyro[0], accel[0]
 
 def get_stream_info(inlet):
+    """Get stream information.
+
+    Args:
+        inlet (StreamInlet): Stream inlet.
+    
+    Returns:
+        Tuple[int, int, List[str]]: Sampling frequency, number of channels, and channel names.
+    """
     info = inlet.info()
     fs = int(info.nominal_srate())
     n_channels = info.channel_count()
@@ -100,6 +109,8 @@ def get_initial_roll_angle(inlet_gyro, gyro_fs, shift_length):
 def main():
     # Define shift_length and other parameters
     shift_length = 0.4
+    cutoff_freq = 2.0  # Low-pass filter cutoff frequency
+    order = 5  # Filter order
 
     try:
         arduino = serial.Serial(port='COM7', timeout=0)
@@ -110,7 +121,7 @@ def main():
 
     # Parse arguments
     args = parse_arguments()
-    
+
     # Connect to streams
     eeg_stream, gyro_stream, accel_stream = connect_to_streams()
 
@@ -167,13 +178,18 @@ def main():
 
             gyro_data, gyro_timestamp = inlet_gyro.pull_chunk(timeout=1, max_samples=int(shift_length * gyro_fs))
             gyro_data = np.array(gyro_data)
-            gyro_timestamp = np.array(gyro_timestamp)
+            gyro_timestamp = datetime.now()
 
-            dt = BCIw.calculate_dt(previous_timestamp, gyro_timestamp[0]) if previous_timestamp != 0 else 0
-            previous_timestamp = gyro_timestamp[-1]
+            dt = BCIw.calculate_dt(previous_timestamp, gyro_timestamp) if previous_timestamp != 0 else 0
+            print(f'Dt: {dt}')
+            previous_timestamp = gyro_timestamp
 
             accel_data, _ = inlet_accel.pull_chunk(timeout=1, max_samples=int(shift_length * accel_fs))
             accel_data = np.array(accel_data)
+
+            # Apply low-pass filter to gyro and accel data
+            # gyro_data_filtered = BCIw.lowpass_filter(gyro_data, cutoff_freq, gyro_fs, order)
+            # accel_data_filtered = BCIw.lowpass_filter(accel_data, cutoff_freq, accel_fs, order)
 
             roll, pitch, yaw = BCIw.complementary_filter(gyro_data, accel_data, dt)
             mean_roll = np.mean(roll)
@@ -212,4 +228,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
